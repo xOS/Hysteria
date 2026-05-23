@@ -9,7 +9,7 @@ export PATH
 # 主页: https://aapls.com
 #=================================================
 
-sh_ver="0.1.2"
+sh_ver="0.1.3"
 repo_owner="apernet"
 repo_name="hysteria"
 shell_url="https://raw.githubusercontent.com/xOS/Hysteria/master/hysteria.sh"
@@ -27,8 +27,8 @@ server_bin="${bin_dir}/hysteria"
 
 Green_font_prefix="\033[32m" && Red_font_prefix="\033[31m" && Green_background_prefix="\033[42;37m" && Red_background_prefix="\033[41;37m" && Font_color_suffix="\033[0m" && Yellow_font_prefix="\033[0;33m"
 Info="${Green_font_prefix}[信息]${Font_color_suffix}"
-Error="${Red_font_prefix}[错误]${Font_color_suffix}"
-Tip="${Yellow_font_prefix}[注意]${Font_color_suffix}"
+Error="${Red_font_prefix}[警告]${Font_color_suffix}"
+Tip="${Yellow_font_prefix}[提示]${Font_color_suffix}"
 
 release=""
 arch=""
@@ -65,8 +65,8 @@ hy_masquerade_status="200"
 hy_client_sni=""
 hy_default_sni=""
 
-default_self_signed_cn="www.bing.com"
-default_masquerade_url="https://www.bing.com"
+default_self_signed_cn="www.wechat.com"
+default_masquerade_url="https://www.wechat.com"
 default_masquerade_dir="/www/masq"
 default_masquerade_string="hello"
 default_masquerade_status="200"
@@ -893,9 +893,15 @@ writeConfig(){
 			fi
 
 			echo ""
-			echo "bandwidth:"
-			echo "  up: 0 gbps"
-			echo "  down: 0 gbps"
+			echo "quic:"
+			echo "  initStreamReceiveWindow: 8388608"
+			echo "  maxStreamReceiveWindow: 8388608"
+			echo "  initConnReceiveWindow: 20971520"
+			echo "  maxConnReceiveWindow: 20971520"
+			echo "  maxIdleTimeout: 30s"
+			echo "  maxIncomingStreams: 1024"
+			echo "  disablePathMTUDiscovery: false"
+
 			echo ""
 			echo "udpIdleTimeout: 90s"
 		} > "${config_file}"

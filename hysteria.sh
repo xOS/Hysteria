@@ -9,7 +9,7 @@ export PATH
 # 主页: https://aapls.com
 #=================================================
 
-sh_ver="0.1.0"
+sh_ver="0.1.1"
 repo_owner="apernet"
 repo_name="hysteria"
 shell_url="https://raw.githubusercontent.com/xOS/Hysteria/master/hysteria.sh"
@@ -264,6 +264,25 @@ strip_quotes(){
 
 firstDomainFromCSV(){
 	echo "$1" | awk -F',' '{print $1}' | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+extractCertServerName(){
+	local cert_path="$1"
+	local san_line
+	local san_name
+	local cn_name
+
+	[[ -f "${cert_path}" ]] || { echo ""; return 1; }
+
+	san_line=$(openssl x509 -in "${cert_path}" -noout -ext subjectAltName 2>/dev/null | tr '\n' ' ')
+	san_name=$(echo "${san_line}" | grep -oE 'DNS:[^, ]+' | head -n 1 | sed 's/^DNS://')
+	if [[ -n "${san_name}" ]]; then
+		echo "${san_name}"
+		return 0
+	fi
+
+	cn_name=$(openssl x509 -in "${cert_path}" -noout -subject 2>/dev/null | sed -E 's/^subject= *//' | sed -nE 's#.*CN=([^,/]+).*#\1#p' | head -n 1)
+	echo "${cn_name}"
 }
 
 url_encode(){
@@ -928,20 +947,25 @@ setAuth(){
 }
 
 setTLSMode(){
-	local allow_sni="${1:-false}"
-	if [[ "${allow_sni}" == "true" ]]; then
-		echo -e "请选择 TLS 模式:\n${Green_font_prefix} 1.${Font_color_suffix} ACME 自动证书\n${Green_font_prefix} 2.${Font_color_suffix} 已有证书\n${Green_font_prefix} 3.${Font_color_suffix} 自签名证书\n${Green_font_prefix} 4.${Font_color_suffix} SNI 配置"
-	else
-		echo -e "请选择 TLS 模式:\n${Green_font_prefix} 1.${Font_color_suffix} ACME 自动证书\n${Green_font_prefix} 2.${Font_color_suffix} 已有证书\n${Green_font_prefix} 3.${Font_color_suffix} 自签名证书"
-	fi
+	echo -e "请选择 TLS 模式:\n${Green_font_prefix} 1.${Font_color_suffix} ACME 自动证书\n${Green_font_prefix} 2.${Font_color_suffix} 已有证书\n${Green_font_prefix} 3.${Font_color_suffix} 自签名证书"
 	read -e -p "(默认: 3): " tls_choice
 	[[ -z "${tls_choice}" ]] && tls_choice="3"
 	if [[ "${tls_choice}" == "2" ]]; then
 		hy_tls_mode="tls"
+		local detected_sni
 		read -e -p "证书路径: " hy_cert_path
 		read -e -p "私钥路径: " hy_key_path
 		if [[ ! -f "${hy_cert_path}" || ! -f "${hy_key_path}" ]]; then
 			echo -e "${Tip} 证书或私钥文件不存在，请确认路径是否正确。"
+			hy_client_sni=""
+		else
+			detected_sni=$(extractCertServerName "${hy_cert_path}")
+			if [[ -n "${detected_sni}" ]]; then
+				hy_client_sni="${detected_sni}"
+			else
+				hy_client_sni=""
+				echo -e "${Tip} 无法从证书读取 SNI，请确认该证书包含 SAN/CN。"
+			fi
 		fi
 	elif [[ "${tls_choice}" == "3" ]]; then
 		hy_tls_mode="tls"
@@ -953,8 +977,7 @@ setTLSMode(){
 		generateSelfSignedCert "${cert_domain}" || { echo -e "${Error} 证书生成失败"; return 1; }
 		hy_cert_path="${cert_file}"
 		hy_key_path="${key_file}"
-	elif [[ "${tls_choice}" == "4" && "${allow_sni}" == "true" ]]; then
-		setClientSni
+		hy_client_sni="${cert_domain}"
 	else
 		hy_tls_mode="acme"
 		local default_acme_domain
@@ -1000,8 +1023,8 @@ setObfs(){
 }
 
 setMasquerade(){
-	read -e -p "是否启用伪装? (y/N): " masq_choice
-	[[ -z "${masq_choice}" ]] && masq_choice="n"
+	read -e -p "是否启用伪装? (Y/n): " masq_choice
+	[[ -z "${masq_choice}" ]] && masq_choice="y"
 	if [[ ${masq_choice} == [Yy] ]]; then
 		hy_masquerade_enable="true"
 		echo -e "请选择伪装类型:\n${Green_font_prefix} 1.${Font_color_suffix} proxy\n${Green_font_prefix} 2.${Font_color_suffix} file\n${Green_font_prefix} 3.${Font_color_suffix} string"
@@ -1169,10 +1192,13 @@ viewConfig(){
 	fi
 	if [[ "${cfg_tls_mode}" == "acme" && -n "${cfg_acme_domains}" ]]; then
 		sni_value=$(firstDomainFromCSV "${cfg_acme_domains}")
+	elif [[ "${cfg_tls_mode}" == "tls" && -n "${cfg_cert}" ]]; then
+		sni_value=$(extractCertServerName "${cfg_cert}")
+		if [[ -z "${sni_value}" && -n "${cfg_client_sni}" ]]; then
+			sni_value="${cfg_client_sni}"
+		fi
 	elif [[ -n "${cfg_client_sni}" ]]; then
 		sni_value="${cfg_client_sni}"
-	elif [[ "${cfg_tls_mode}" == "tls" && -n "${cert_subject}" ]] && echo "${cert_subject}" | grep -q "CN="; then
-		sni_value=$(echo "${cert_subject}" | sed -E 's/^.*CN=([^/]+).*$/\1/')
 	fi
 
 	insecure_value="false"
@@ -1291,7 +1317,6 @@ installHysteria(){
 	ensureAcmeDependencies || { sleep 2s; startMenu; return 1; }
 	setObfs
 	setMasquerade
-	setClientSni
 	echo -e "${Info} 开始安装依赖..."
 	checkDependencies
 	installDependencies
@@ -1384,7 +1409,6 @@ modifyConfig(){
 	ensureAcmeDependencies || { sleep 2s; startMenu; return 1; }
 	setObfs
 	setMasquerade
-	setClientSni
 	applyConfigAndRestart || { sleep 2s; startMenu; return 1; }
 	echo -e "${Info} 配置修改完成。"
 	sleep 2s
@@ -1426,7 +1450,7 @@ modifyAuth(){
 modifyTLS(){
 	checkInstalledStatus
 	syncConfigToVars || { sleep 2s; startMenu; return 1; }
-	setTLSMode "true" || { sleep 2s; startMenu; return 1; }
+	setTLSMode || { sleep 2s; startMenu; return 1; }
 	ensureAcmeDependencies || { sleep 2s; startMenu; return 1; }
 	applyConfigAndRestart || { sleep 2s; startMenu; return 1; }
 	echo -e "${Info} TLS 配置修改完成。"

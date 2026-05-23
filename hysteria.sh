@@ -9,7 +9,7 @@ export PATH
 # 主页: https://aapls.com
 #=================================================
 
-sh_ver="0.1.1"
+sh_ver="0.1.2"
 repo_owner="apernet"
 repo_name="hysteria"
 shell_url="https://raw.githubusercontent.com/xOS/Hysteria/master/hysteria.sh"
@@ -43,6 +43,11 @@ hy_userpass=""
 hy_tls_mode="tls"
 hy_acme_domains=""
 hy_acme_email=""
+hy_acme_type="http"
+hy_acme_http_alt_port=""
+hy_acme_tls_alt_port=""
+hy_acme_dns_name="cloudflare"
+hy_acme_dns_config=""
 hy_cert_path="${cert_file}"
 hy_key_path="${key_file}"
 hy_obfs_enable="false"
@@ -65,6 +70,8 @@ default_masquerade_url="https://www.bing.com"
 default_masquerade_dir="/www/masq"
 default_masquerade_string="hello"
 default_masquerade_status="200"
+default_masquerade_header_content_type="text/plain"
+default_masquerade_header_custom_stuff="ice cream so good"
 
 sni_candidates=(
 	"ads.apple.com"
@@ -424,6 +431,11 @@ loadConfigInfo(){
 	cfg_tls_mode=""
 	cfg_acme_domains=""
 	cfg_acme_email=""
+	cfg_acme_type=""
+	cfg_acme_http_alt_port=""
+	cfg_acme_tls_alt_port=""
+	cfg_acme_dns_name=""
+	cfg_acme_dns_config=""
 	cfg_cert=""
 	cfg_key=""
 	cfg_obfs_type=""
@@ -438,6 +450,10 @@ loadConfigInfo(){
 
 	local section=""
 	local in_domains=0
+	local in_acme_http=0
+	local in_acme_tls=0
+	local in_acme_dns=0
+	local in_acme_dns_config=0
 	local in_userpass=0
 	local in_masq_proxy=0
 	local in_masq_file=0
@@ -460,6 +476,10 @@ loadConfigInfo(){
 		if [[ "${line}" =~ ^[^[:space:]] ]]; then
 			section="${line%%:*}"
 			in_domains=0
+			in_acme_http=0
+			in_acme_tls=0
+			in_acme_dns=0
+			in_acme_dns_config=0
 			in_userpass=0
 			in_masq_proxy=0
 			in_masq_file=0
@@ -478,6 +498,35 @@ loadConfigInfo(){
 					in_domains=0
 					continue
 				fi
+				if [[ "${line}" =~ ^[[:space:]]*type: ]]; then
+					cfg_acme_type=$(strip_quotes "${line#*:}")
+					continue
+				fi
+				if [[ "${line}" =~ ^[[:space:]]*http: ]]; then
+					in_acme_http=1
+					in_acme_tls=0
+					in_acme_dns=0
+					in_acme_dns_config=0
+					continue
+				fi
+				if [[ "${line}" =~ ^[[:space:]]*tls: ]]; then
+					in_acme_http=0
+					in_acme_tls=1
+					in_acme_dns=0
+					in_acme_dns_config=0
+					continue
+				fi
+				if [[ "${line}" =~ ^[[:space:]]*dns: ]]; then
+					in_acme_http=0
+					in_acme_tls=0
+					in_acme_dns=1
+					in_acme_dns_config=0
+					continue
+				fi
+				if [[ ${in_acme_dns} -eq 1 && "${line}" =~ ^[[:space:]]*config: ]]; then
+					in_acme_dns_config=1
+					continue
+				fi
 				if [[ ${in_domains} -eq 1 && "${line}" =~ ^[[:space:]]*-[[:space:]] ]]; then
 					local dom
 					dom=$(strip_quotes "${line#*-}")
@@ -485,6 +534,27 @@ loadConfigInfo(){
 						cfg_acme_domains="${dom}"
 					else
 						cfg_acme_domains="${cfg_acme_domains}, ${dom}"
+					fi
+				fi
+				if [[ ${in_acme_http} -eq 1 && "${line}" =~ ^[[:space:]]*altPort: ]]; then
+					cfg_acme_http_alt_port=$(strip_quotes "${line#*:}")
+				fi
+				if [[ ${in_acme_tls} -eq 1 && "${line}" =~ ^[[:space:]]*altPort: ]]; then
+					cfg_acme_tls_alt_port=$(strip_quotes "${line#*:}")
+				fi
+				if [[ ${in_acme_dns} -eq 1 && "${line}" =~ ^[[:space:]]*name: ]]; then
+					cfg_acme_dns_name=$(strip_quotes "${line#*:}")
+				fi
+				if [[ ${in_acme_dns_config} -eq 1 && "${line}" =~ ^[[:space:]]*[A-Za-z0-9_.-]+:[[:space:]]*.*$ ]]; then
+					local cfg_dns_key cfg_dns_val
+					cfg_dns_key=$(echo "${line}" | sed -nE 's/^[[:space:]]*([A-Za-z0-9_.-]+):.*/\1/p')
+					cfg_dns_val=$(strip_quotes "${line#*:}")
+					if [[ -n "${cfg_dns_key}" ]]; then
+						if [[ -z "${cfg_acme_dns_config}" ]]; then
+							cfg_acme_dns_config="${cfg_dns_key}=${cfg_dns_val}"
+						else
+							cfg_acme_dns_config="${cfg_acme_dns_config},${cfg_dns_key}=${cfg_dns_val}"
+						fi
 					fi
 				fi
 				;;
@@ -587,6 +657,11 @@ syncConfigToVars(){
 	if [[ "${hy_tls_mode}" == "acme" ]]; then
 		hy_acme_domains="${cfg_acme_domains}"
 		hy_acme_email="${cfg_acme_email}"
+		hy_acme_type="${cfg_acme_type:-http}"
+		hy_acme_http_alt_port="${cfg_acme_http_alt_port}"
+		hy_acme_tls_alt_port="${cfg_acme_tls_alt_port}"
+		hy_acme_dns_name="${cfg_acme_dns_name:-cloudflare}"
+		hy_acme_dns_config="${cfg_acme_dns_config}"
 	else
 		hy_cert_path="${cfg_cert:-${hy_cert_path}}"
 		hy_key_path="${cfg_key:-${hy_key_path}}"
@@ -724,6 +799,7 @@ generateSelfSignedCert(){
 }
 
 writeConfig(){
+	local acme_type
 	mkdir -p "${install_dir}"
 	chmod 700 "${install_dir}"
 
@@ -733,6 +809,7 @@ writeConfig(){
 		fi
 		echo "listen: $(yaml_quote "${hy_listen}")"
 		if [[ "${hy_tls_mode}" == "acme" ]]; then
+			acme_type="${hy_acme_type:-http}"
 			echo ""
 			echo "acme:"
 			echo "  domains:"
@@ -742,6 +819,31 @@ writeConfig(){
 				[[ -n "${d}" ]] && echo "    - $(yaml_quote "${d}")"
 			done
 			echo "  email: $(yaml_quote "${hy_acme_email}")"
+			echo "  type: $(yaml_quote "${acme_type}")"
+			if [[ "${acme_type}" == "http" ]]; then
+				if [[ -n "${hy_acme_http_alt_port}" ]]; then
+					echo "  http:"
+					echo "    altPort: ${hy_acme_http_alt_port}"
+				fi
+			elif [[ "${acme_type}" == "tls" ]]; then
+				if [[ -n "${hy_acme_tls_alt_port}" ]]; then
+					echo "  tls:"
+					echo "    altPort: ${hy_acme_tls_alt_port}"
+				fi
+			elif [[ "${acme_type}" == "dns" ]]; then
+				echo "  dns:"
+				echo "    name: $(yaml_quote "${hy_acme_dns_name}")"
+				if [[ -n "${hy_acme_dns_config}" ]]; then
+					local dns_entry dns_key dns_val
+					echo "    config:"
+					while IFS= read -r dns_entry; do
+						[[ -z "${dns_entry}" ]] && continue
+						dns_key=$(echo "${dns_entry%%=*}" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//')
+						dns_val=$(echo "${dns_entry#*=}" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//')
+						[[ -n "${dns_key}" ]] && echo "      ${dns_key}: $(yaml_quote "${dns_val}")"
+					done <<< "$(echo "${hy_acme_dns_config}" | tr ',' '\n')"
+				fi
+			fi
 		else
 			echo ""
 			echo "tls:"
@@ -783,6 +885,9 @@ writeConfig(){
 			elif [[ "${hy_masquerade_type}" == "string" ]]; then
 				echo "  string:"
 				echo "    content: $(yaml_quote "${hy_masquerade_string}")"
+				echo "    headers:"
+				echo "      content-type: $(yaml_quote "${default_masquerade_header_content_type}")"
+				echo "      custom-stuff: $(yaml_quote "${default_masquerade_header_custom_stuff}")"
 				echo "    statusCode: ${hy_masquerade_status}"
 				fi
 			fi
@@ -982,6 +1087,11 @@ setTLSMode(){
 		hy_tls_mode="acme"
 		local default_acme_domain
 		local primary_acme_domain
+		local current_acme_type
+		local acme_type_choice
+		local port_input
+		local dns_provider
+		local dns_config_input
 		default_acme_domain=$(hostname -f 2>/dev/null || true)
 		if [[ "${default_acme_domain}" != *.* ]]; then
 			default_acme_domain="example.com"
@@ -998,6 +1108,92 @@ setTLSMode(){
 		if [[ -n "${primary_acme_domain}" ]]; then
 			hy_client_sni="${primary_acme_domain}"
 		fi
+
+		current_acme_type="${hy_acme_type:-http}"
+		echo -e "请选择 ACME 验证方式:\n${Green_font_prefix} 1.${Font_color_suffix} HTTP-01\n${Green_font_prefix} 2.${Font_color_suffix} TLS-ALPN-01\n${Green_font_prefix} 3.${Font_color_suffix} DNS-01"
+		case "${current_acme_type}" in
+			tls) read -e -p "(默认: 2): " acme_type_choice ;;
+			dns) read -e -p "(默认: 3): " acme_type_choice ;;
+			*) read -e -p "(默认: 1): " acme_type_choice ;;
+		esac
+		[[ -z "${acme_type_choice}" ]] && {
+			case "${current_acme_type}" in
+				tls) acme_type_choice="2" ;;
+				dns) acme_type_choice="3" ;;
+				*) acme_type_choice="1" ;;
+			esac
+		}
+
+		case "${acme_type_choice}" in
+			2)
+				hy_acme_type="tls"
+				hy_acme_http_alt_port=""
+				hy_acme_dns_name=""
+				hy_acme_dns_config=""
+				read -e -p "TLS-ALPN-01 altPort (留空使用 443): " port_input
+				if [[ -n "${port_input}" && "${port_input}" =~ ^[0-9]+$ && ${port_input} -ge 1 && ${port_input} -le 65535 ]]; then
+					if [[ "${port_input}" == "443" ]]; then
+						hy_acme_tls_alt_port=""
+					else
+						hy_acme_tls_alt_port="${port_input}"
+						echo -e "${Tip} 使用非 443 端口时，需要将公网 443 转发到该端口。"
+					fi
+				else
+					hy_acme_tls_alt_port=""
+				fi
+				;;
+			3)
+				hy_acme_type="dns"
+				hy_acme_http_alt_port=""
+				hy_acme_tls_alt_port=""
+				read -e -p "DNS 服务商名称 (默认: ${hy_acme_dns_name:-cloudflare}): " dns_provider
+				[[ -z "${dns_provider}" ]] && dns_provider="${hy_acme_dns_name:-cloudflare}"
+				hy_acme_dns_name="${dns_provider}"
+				echo -e "${Tip} 请输入 DNS API 配置，格式: key1=value1,key2=value2"
+				read -e -p "DNS API 配置(默认: ${hy_acme_dns_config:-无}): " dns_config_input
+				[[ -z "${dns_config_input}" && -n "${hy_acme_dns_config}" ]] && dns_config_input="${hy_acme_dns_config}"
+				while [[ -z "${dns_config_input}" ]]; do
+					echo -e "${Error} DNS API 配置不能为空。"
+					read -e -p "DNS API 配置: " dns_config_input
+				done
+				while true; do
+					local cfg_pair cfg_key cfg_val valid_dns_kv
+					valid_dns_kv="true"
+					IFS=',' read -r -a cfg_pairs <<< "${dns_config_input}"
+					for cfg_pair in "${cfg_pairs[@]}"; do
+						cfg_key=$(echo "${cfg_pair%%=*}" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//')
+						cfg_val=$(echo "${cfg_pair#*=}" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//')
+						if [[ -z "${cfg_key}" || "${cfg_pair}" != *=* || -z "${cfg_val}" ]]; then
+							valid_dns_kv="false"
+							break
+						fi
+					done
+					if [[ "${valid_dns_kv}" == "true" ]]; then
+						break
+					fi
+					echo -e "${Error} 格式错误，请使用 key1=value1,key2=value2"
+					read -e -p "DNS API 配置: " dns_config_input
+				done
+				hy_acme_dns_config="${dns_config_input}"
+				;;
+			*)
+				hy_acme_type="http"
+				hy_acme_tls_alt_port=""
+				hy_acme_dns_name=""
+				hy_acme_dns_config=""
+				read -e -p "HTTP-01 altPort (留空使用 80): " port_input
+				if [[ -n "${port_input}" && "${port_input}" =~ ^[0-9]+$ && ${port_input} -ge 1 && ${port_input} -le 65535 ]]; then
+					if [[ "${port_input}" == "80" ]]; then
+						hy_acme_http_alt_port=""
+					else
+						hy_acme_http_alt_port="${port_input}"
+						echo -e "${Tip} 使用非 80 端口时，需要将公网 80 转发到该端口。"
+					fi
+				else
+					hy_acme_http_alt_port=""
+				fi
+				;;
+		esac
 	fi
 }
 
@@ -1247,6 +1443,14 @@ viewConfig(){
 	if [[ "${cfg_tls_mode}" == "acme" ]]; then
 		echo -e " ACME 域名\t: ${Green_font_prefix}${cfg_acme_domains:-未设置}${Font_color_suffix}"
 		echo -e " ACME 邮箱\t: ${Green_font_prefix}${cfg_acme_email:-未设置}${Font_color_suffix}"
+		echo -e " ACME 验证\t: ${Green_font_prefix}${cfg_acme_type:-http}${Font_color_suffix}"
+		if [[ "${cfg_acme_type}" == "dns" ]]; then
+			echo -e " DNS 服务商\t: ${Green_font_prefix}${cfg_acme_dns_name:-未设置}${Font_color_suffix}"
+		elif [[ "${cfg_acme_type}" == "http" && -n "${cfg_acme_http_alt_port}" ]]; then
+			echo -e " HTTP altPort\t: ${Green_font_prefix}${cfg_acme_http_alt_port}${Font_color_suffix}"
+		elif [[ "${cfg_acme_type}" == "tls" && -n "${cfg_acme_tls_alt_port}" ]]; then
+			echo -e " TLS altPort\t: ${Green_font_prefix}${cfg_acme_tls_alt_port}${Font_color_suffix}"
+		fi
 	else
 		echo -e " 证书路径\t: ${Green_font_prefix}${cfg_cert:-未设置}${Font_color_suffix}"
 		echo -e " 私钥路径\t: ${Green_font_prefix}${cfg_key:-未设置}${Font_color_suffix}"
